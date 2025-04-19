@@ -150,10 +150,5 @@ launchctl load ~/Library/LaunchAgents/com.user.exfatintegrity.plist
 
 ---
 
-## License
 
-MIT License — see [LICENSE](LICENSE) for details.
-
----
-
-> _Maintained by [Your Name]._  Feel free to contribute or request features via issues or pull requests.
+> _Maintained by Shuaiting._  Feel free to contribute or request features via issues or pull requests.
