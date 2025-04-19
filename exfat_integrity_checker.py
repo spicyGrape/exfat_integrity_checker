@@ -28,6 +28,17 @@ def compute_hash(path, algo="sha256", chunk_size=8192):
     return h.hexdigest()
 
 
+def should_ignore_file(filename):
+    """Check if a file should be ignored based on its name."""
+    ignored_patterns = [
+        ".DS_Store",
+        "._",
+        ".Spotlight-V100",
+        ".Trashes",
+    ]
+    return any(filename.startswith(pattern) for pattern in ignored_patterns)
+
+
 def connect_db(db_path):
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
@@ -51,6 +62,8 @@ def init_db(root, db_path):
     print(f"Initializing database at '{db_path}' with files under '{root}'...")
     for dirpath, _, filenames in os.walk(root):
         for fname in filenames:
+            if should_ignore_file(fname):
+                continue
             full = os.path.join(dirpath, fname)
             try:
                 stat = os.stat(full)
@@ -82,6 +95,8 @@ def check_db(root, db_path):
     print(f"Checking files under '{root}' against database '{db_path}'...")
     for dirpath, _, filenames in os.walk(root):
         for fname in filenames:
+            if should_ignore_file(fname):
+                continue
             full = os.path.join(dirpath, fname)
             found_paths.add(full)
             try:
