@@ -13,6 +13,7 @@ A simple Python-based integrity checker for files on an exFAT (or any) filesyste
   - Removed files
 - **Configurable Database Location**: Use a default `integrity.db` or specify a custom path.
 - **Cross-Platform**: Works wherever Python 3.6+ and SQLite are available (macOS, Linux, Windows).
+- **Multi-threaded Performance**: Utilizes multi-threading to improve performance by processing files concurrently.
 
 ---
 

@@ -17,6 +17,7 @@ import hashlib
 import sqlite3
 import argparse
 import time
+import concurrent.futures  # P43d3
 
 
 def compute_hash(path, algo="sha256", chunk_size=8192):
@@ -45,23 +46,31 @@ def connect_db(db_path):
     return conn
 
 
+def process_file(full, c):  # P0be0
+    try:
+        stat = os.stat(full)
+        file_hash = compute_hash(full)
+        c.execute(
+            "REPLACE INTO files VALUES (?, ?, ?, ?)",
+            (full, file_hash, stat.st_mtime, stat.st_size),
+        )
+        print(f"Hashed: {full}")
+    except Exception as e:
+        print(f"Error hashing {full}: {e}")
+
+
 def init_db(root, db_path):
     conn = connect_db(db_path)
     c = conn.cursor()
     print(f"Initializing database at '{db_path}' with files under '{root}'...")
-    for dirpath, _, filenames in os.walk(root):
-        for fname in filenames:
-            full = os.path.join(dirpath, fname)
-            try:
-                stat = os.stat(full)
-                file_hash = compute_hash(full)
-                c.execute(
-                    "REPLACE INTO files VALUES (?, ?, ?, ?)",
-                    (full, file_hash, stat.st_mtime, stat.st_size),
-                )
-                print(f"Hashed: {full}")
-            except Exception as e:
-                print(f"Error hashing {full}: {e}")
+    with concurrent.futures.ThreadPoolExecutor() as executor:  # P4183
+        futures = []
+        for dirpath, _, filenames in os.walk(root):
+            for fname in filenames:
+                full = os.path.join(dirpath, fname)
+                futures.append(executor.submit(process_file, full, c))
+        for future in concurrent.futures.as_completed(futures):
+            future.result()
     conn.commit()
     conn.close()
     print("Initialization complete.")
@@ -80,32 +89,15 @@ def check_db(root, db_path):
     added = []
 
     print(f"Checking files under '{root}' against database '{db_path}'...")
-    for dirpath, _, filenames in os.walk(root):
-        for fname in filenames:
-            full = os.path.join(dirpath, fname)
-            found_paths.add(full)
-            try:
-                new_hash = compute_hash(full)
-                if full not in existing:
-                    added.append(full)
-                    c.execute(
-                        "REPLACE INTO files VALUES (?, ?, ?, ?)",
-                        (full, new_hash, os.stat(full).st_mtime, os.stat(full).st_size),
-                    )
-                else:
-                    if new_hash != existing[full]:
-                        modified.append(full)
-                        c.execute(
-                            "REPLACE INTO files VALUES (?, ?, ?, ?)",
-                            (
-                                full,
-                                new_hash,
-                                os.stat(full).st_mtime,
-                                os.stat(full).st_size,
-                            ),
-                        )
-            except Exception as e:
-                print(f"Error hashing {full}: {e}")
+    with concurrent.futures.ThreadPoolExecutor() as executor:  # Pdf7b
+        futures = []
+        for dirpath, _, filenames in os.walk(root):
+            for fname in filenames:
+                full = os.path.join(dirpath, fname)
+                found_paths.add(full)
+                futures.append(executor.submit(process_file, full, c))
+        for future in concurrent.futures.as_completed(futures):
+            future.result()
 
     # Detect removed files
     removed = [path for path in existing if path not in found_paths]
