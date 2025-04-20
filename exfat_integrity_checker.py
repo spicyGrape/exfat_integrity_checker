@@ -17,6 +17,7 @@ import hashlib
 import sqlite3
 import argparse
 import time
+from tqdm import tqdm
 
 
 def compute_hash(path, algo="sha256", chunk_size=8192):
@@ -28,15 +29,53 @@ def compute_hash(path, algo="sha256", chunk_size=8192):
     return h.hexdigest()
 
 
-def should_ignore_file(filename):
-    """Check if a file should be ignored based on its name."""
+def should_ignore_file(filepath):
+    """Check if a file should be ignored based on its name or path."""
+    # Get just the filename without the path
+    filename = os.path.basename(filepath)
+
+    # Common macOS system files to ignore
     ignored_patterns = [
         ".DS_Store",
-        "._",
+        "._",  # Resource fork files
         ".Spotlight-V100",
         ".Trashes",
+        ".fseventsd",
+        ".TemporaryItems",
+        "Icon\r",
+        ".AppleDouble",
+        ".LSOverride",
+        ".DocumentRevisions-V100",
+        ".VolumeIcon.icns",
+        ".com.apple.timemachine.",
     ]
-    return any(filename.startswith(pattern) for pattern in ignored_patterns)
+
+    # Common macOS hidden directories to ignore - if ANY part of the path contains these, ignore the file
+    ignored_dirs = [
+        ".Spotlight-V100",
+        ".Trashes",
+        ".fseventsd",
+        ".TemporaryItems",
+        ".AppleDouble",
+        ".DocumentRevisions-V100",
+        "__MACOSX",
+    ]
+
+    # Check filename against patterns
+    if any(filename.startswith(pattern) for pattern in ignored_patterns):
+        return True
+
+    # Check if file is in ANY directory that should be ignored
+    # This ensures we ignore files under paths like /Volumes/Data/.Spotlight-V100/...
+    filepath_normalized = os.path.normpath(filepath)
+    path_parts = filepath_normalized.split(os.sep)
+
+    # Check if any part of the path is a system directory to ignore
+    for ignored_dir in ignored_dirs:
+        if ignored_dir in path_parts:
+            return True
+
+    return False
 
 
 def connect_db(db_path):
@@ -60,21 +99,37 @@ def init_db(root, db_path):
     conn = connect_db(db_path)
     c = conn.cursor()
     print(f"Initializing database at '{db_path}' with files under '{root}'...")
+
+    # First, count total files for progress bar
+    total_files = 0
     for dirpath, _, filenames in os.walk(root):
         for fname in filenames:
-            if should_ignore_file(fname):
-                continue
             full = os.path.join(dirpath, fname)
-            try:
-                stat = os.stat(full)
-                file_hash = compute_hash(full)
-                c.execute(
-                    "REPLACE INTO files VALUES (?, ?, ?, ?)",
-                    (full, file_hash, stat.st_mtime, stat.st_size),
-                )
-                print(f"Hashed: {full}")
-            except Exception as e:
-                print(f"Error hashing {full}: {e}")
+            if not should_ignore_file(full):
+                total_files += 1
+
+    # Now process files with progress bar
+    processed = 0
+    with tqdm(total=total_files, desc="Hashing files") as pbar:
+        for dirpath, _, filenames in os.walk(root):
+            for fname in filenames:
+                full = os.path.join(dirpath, fname)
+                if should_ignore_file(full):
+                    continue
+                try:
+                    stat = os.stat(full)
+                    file_hash = compute_hash(full)
+                    c.execute(
+                        "REPLACE INTO files VALUES (?, ?, ?, ?)",
+                        (full, file_hash, stat.st_mtime, stat.st_size),
+                    )
+                    pbar.update(1)
+                    processed += 1
+                    if processed % 10 == 0:  # Commit every 10 files
+                        conn.commit()
+                except Exception as e:
+                    print(f"\nError hashing {full}: {e}")
+
     conn.commit()
     conn.close()
     print("Initialization complete.")
@@ -93,23 +148,27 @@ def check_db(root, db_path):
     added = []
 
     print(f"Checking files under '{root}' against database '{db_path}'...")
+
+    # First, count total files for progress bar
+    total_files = 0
     for dirpath, _, filenames in os.walk(root):
         for fname in filenames:
-            if should_ignore_file(fname):
-                continue
             full = os.path.join(dirpath, fname)
-            found_paths.add(full)
-            try:
-                new_hash = compute_hash(full)
-                if full not in existing:
-                    added.append(full)
-                    c.execute(
-                        "REPLACE INTO files VALUES (?, ?, ?, ?)",
-                        (full, new_hash, os.stat(full).st_mtime, os.stat(full).st_size),
-                    )
-                else:
-                    if new_hash != existing[full]:
-                        modified.append(full)
+            if not should_ignore_file(full):
+                total_files += 1
+
+    # Now process files with progress bar
+    with tqdm(total=total_files, desc="Verifying files") as pbar:
+        for dirpath, _, filenames in os.walk(root):
+            for fname in filenames:
+                full = os.path.join(dirpath, fname)
+                if should_ignore_file(full):
+                    continue
+                found_paths.add(full)
+                try:
+                    new_hash = compute_hash(full)
+                    if full not in existing:
+                        added.append(full)
                         c.execute(
                             "REPLACE INTO files VALUES (?, ?, ?, ?)",
                             (
@@ -119,13 +178,30 @@ def check_db(root, db_path):
                                 os.stat(full).st_size,
                             ),
                         )
-            except Exception as e:
-                print(f"Error hashing {full}: {e}")
+                    else:
+                        if new_hash != existing[full]:
+                            modified.append(full)
+                            c.execute(
+                                "REPLACE INTO files VALUES (?, ?, ?, ?)",
+                                (
+                                    full,
+                                    new_hash,
+                                    os.stat(full).st_mtime,
+                                    os.stat(full).st_size,
+                                ),
+                            )
+                    pbar.update(1)
+                except Exception as e:
+                    print(f"\nError hashing {full}: {e}")
 
     # Detect removed files
     removed = [path for path in existing if path not in found_paths]
-    for path in removed:
-        c.execute("DELETE FROM files WHERE path = ?", (path,))
+
+    if removed:
+        with tqdm(total=len(removed), desc="Removing obsolete entries") as pbar:
+            for path in removed:
+                c.execute("DELETE FROM files WHERE path = ?", (path,))
+                pbar.update(1)
 
     conn.commit()
     conn.close()
